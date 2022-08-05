@@ -1,0 +1,1676 @@
+---
+title: 'Analysis: Climate - Fire - Veg - Ticks '
+output:
+  word_document:
+    toc: yes
+  pdf_document:
+    toc: yes
+  html_document:
+    self_contained: no
+    theme: readable
+    toc: yes
+    toc_float: yes
+date: "`r Sys.Date()`"
+---
+
+```{r set opts, echo=FALSE}
+library(knitr)
+## Text results
+opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, include = FALSE)
+```
+
+```{r load libraries, echo=FALSE, message=FALSE}
+library(tidyverse)
+library(readxl)
+library(viridisLite)
+library(viridis)
+library(lme4)
+library(MuMIn)
+library(DHARMa)
+library(patchwork)
+library(sjPlot)
+library(lme4)
+
+rm(list=ls())
+```
+
+```{r load all plot level data, results='hide'}
+all_plot_data <- read_csv("data/processed_data/all_plotlevel_data.csv")
+# summary(tick_data_sum)
+
+## 1 year, 15 year, and 30 year aggregations
+climate_data <- read_csv("data/processed_data/aggregated_plot_daymet_data.csv")
+## 6 month aggregation
+clim_6mo <- read_csv("data/processed_data/aggregated_6mo_plot_daymet.csv")
+
+# Drought index data
+di_data <- read_csv("data/processed_data/plot_drought_index.csv")
+di_data <- select(di_data, -geometry)
+
+
+tick_data_sum <- left_join(all_plot_data, climate_data) %>% 
+      left_join(., clim_6mo) %>% 
+      left_join(., di_data)
+
+## Now has tick relative abundance, plot vegetation/litter, and climate
+## variables
+tick_data_sum$imcy_inv <- factor(tick_data_sum$imcy_inv, levels = c("Uninvaded","Invaded"))
+
+trapping_effort <- read_csv("data/plot_trapping_effort.csv")
+```
+
+
+Three metrics of tick-borne disease risk:
+
+1. Tick abundance (A) (what we've done so far, but update to ticks per trap)
+2. Tick infection prevalence (P)
+3. Infection prevalence * Abundance (relative density of infected ticks)
+
+Model each of these metrics for each life stage and combined: 
+
+a. nymphs + adults
+b. nymphs
+c. adults
+
+Done: 1a
+
+To-do: all other combinations.
+
+Model 1a: Abundance_all_ **DONE**
+Model 1b: Abundance_nymphs_ 
+Model 1c: Abundance_adults_
+
+Model 2a: Prevalence_all_
+Model 2b: P_nymphs_
+Model 2c: P_adults_
+
+Model 3a: PxA_all_
+Model 3b: PxA_nymphs_
+Model 3c: PxA_adults_
+
+```{r tbo data}
+## Tick-borne organisms data
+pathogen_data <- read_csv("data/tbo_pathogenicity_all.csv")
+# Match column names to plot-level data
+# names(tick_data_sum)
+# names(pathogen_data)
+# unique(pathogen_data$Installation)
+# unique(tick_data_sum$inst_name)
+# unique(tick_data_sum$plot_id)
+
+# Arrange for tick & pathogen abundance, & pathogen prevalence by life stage
+tick_abundance <- pathogen_data %>% 
+  group_by(inst_name, plot_id, visit_year) %>% 
+  summarise(tick_abundance = n_distinct(sample_ID))
+
+human_pathogen <- pathogen_data %>% 
+  filter(Human == "Yes") %>% 
+  group_by(inst_name, plot_id, visit_year) %>% 
+  summarise(ticks_human = n_distinct(sample_ID))
+
+human_path_no_Ramb <- pathogen_data %>% 
+  filter(Human == "Yes", tbo != "Rickettsia amblyommatis") %>% 
+  group_by(inst_name, plot_id, visit_year) %>% 
+  summarise(ticks_human_no_Ramb = n_distinct(sample_ID))
+
+human_animal_pathogen <- pathogen_data %>% 
+  filter(Human == "Yes" | Domestic_Animals == "Yes" | Wildlife == "Yes") %>% 
+  group_by(inst_name, plot_id, visit_year) %>% 
+  summarise(ticks_human_animal = n_distinct(sample_ID))
+
+df <- all_plot_data %>% 
+  select(plot_id, visit_year, inst_name)
+df <- left_join(df, trapping_effort %>% select(-installation))
+df <- left_join(df, tick_abundance)
+df <- df %>% 
+  mutate(tick_abundance = ifelse(is.na(tick_abundance), 0, tick_abundance))
+summary(df)
+df %>% filter(trap_effort==0 | is.na(trap_effort))
+
+df <- df %>% 
+  mutate(ticks_per_trap = tick_abundance / trap_effort)
+
+#BFA: estimate pathogen prevalence at the scale of the plot. Assuming these values are more representative, I would then multiply these prevalence values by the trap-level abundance values (number of ticks/trap) to estimate the mean abundance of infected ticks per trap
+df <- left_join(df, human_pathogen)
+# df %>% filter(is.na(ticks_human_patho)) %>% view
+df <- df %>% 
+  mutate(ticks_human = ifelse(is.na(ticks_human), 0, ticks_human),
+         # ticks_human_per_trap = ticks_human / trap_effort,
+         # humanXtotal = ticks_human_per_trap * ticks_per_trap,
+         prev_human = (ticks_human / tick_abundance),
+         # prev_human_per_trap = prev_human / trap_effort,
+         prevXrel_abund = prev_human * ticks_per_trap)
+# df %>% filter(is.na(prev_human))
+
+df <- left_join(df, human_path_no_Ramb)
+df <- df %>% 
+  mutate(
+    ticks_human_no_Ramb = ifelse(is.na(ticks_human_no_Ramb), 0, ticks_human_no_Ramb),
+    prev_human_no_Ramb = (ticks_human_no_Ramb / tick_abundance),
+    # prev_human_no_Ramb_per_trap = prev_human_no_Ramb / trap_effort,
+    prevXrel_abund_no_Ramb = prev_human_no_Ramb * ticks_per_trap
+    )
+
+df <- left_join(df, human_animal_pathogen)
+df <- df %>% 
+  mutate(
+    ticks_human_animal = ifelse(is.na(ticks_human_animal), 0, ticks_human_animal),
+    prev_human_animal = (ticks_human_animal / tick_abundance),
+    # prev_human_animal_per_trap = (prev_human_animal / trap_effort),
+    prevXrel_abund_human_animal = prev_human_animal * ticks_per_trap
+  )
+summary(df)
+
+df[is.na(df)] <- 0
+
+# # Calculate total tick & pathogen abundance, & pathogen prevalence
+# pathogen_AP_data <- pathogen_AP_data %>% 
+#   mutate(tick_abundance = tick_abundance_adult + tick_abundance_nymph,
+#          pathogen_abundance = pathogen_abundance_adult + pathogen_abundance_nymph,
+#          pathogen_prevalence = pathogen_abundance/tick_abundance)
+# 
+# # Calculate abundance & prevalence for human pathogens
+# human_path_data <- pathogen_data %>% 
+#   filter(Human == "Yes" | Human_Endo == "Yes" | Human_Animal == "Yes") %>% 
+#   group_by(inst_name, plot_id, visit_year, life_stage) %>% 
+#   summarise(tick_abundance = n_distinct(sample_ID),
+#             pathogen_abundance = length(tbo)) %>% 
+#   pivot_wider(names_from = life_stage, values_from = c(tick_abundance, pathogen_abundance))
+# # human_path_data %>% view()
+# human_path_data[is.na(human_path_data)] <- 0
+# 
+# human_path_data <- human_path_data %>% 
+#   mutate(hum_patho_tick_abundance = tick_abundance_adult + tick_abundance_nymph,
+#          hum_patho_abundance = pathogen_abundance_adult + pathogen_abundance_nymph) %>% 
+#   rename(hum_patho_tick_abundance_adult = tick_abundance_adult,
+#          hum_patho_tick_abundance_nymph = tick_abundance_nymph,
+#          hum_patho_abundance_adult = pathogen_abundance_adult,
+#          hum_patho_abundance_nymph = pathogen_abundance_nymph)
+# 
+# pathogen_AP_data <- left_join(pathogen_AP_data, human_path_data)
+# pathogen_AP_data[is.na(pathogen_AP_data)] <- 0
+# 
+# pathogen_AP_data <- pathogen_AP_data %>% 
+#   mutate(
+#     # prevalence of ticks with 1+ human pathogens
+#     hum_patho_tick_prevalence = hum_patho_tick_abundance/tick_abundance,
+#     # prevalence of human pathogens in all ticks
+#     hum_patho_prevalence = hum_patho_abundance/tick_abundance
+#     )
+
+  
+```
+
+
+
+```{r data for models}
+model_data <- tick_data_sum %>% 
+      mutate(f_visit_year = as.factor(visit_year),
+             # clusters_1_2 = rowSums(cbind(total_clusters1m,total_clusters2m), na.rm = T),
+             day_of_year = lubridate::yday(visit_date),
+             litter_kg_m2 = avg_dry_litter_gm2/1000,
+             litter_volume_g_m3 = avg_dry_litter_gm2 * avg_litter_depth_all*.001,
+             avg_30yr_vp_Pa100 = avg_30yr_vp..Pa./100,
+             avg_15yr_vp_Pa100 = avg_15yr_vp..Pa./100,
+             avg_30yr_prcp_cm = avg_30yr_prcp..mm.day./100,
+             avg_15yr_prcp_cm = avg_15yr_prcp..mm.day./100
+             ) %>% 
+      select(-starts_with("sd"))
+
+model_data <- left_join(model_data, df)
+
+summary(model_data)
+
+```
+
+```{r Exclude NAs from model data}
+model_data_noNA <- filter(model_data, !is.na(pct_pinus_dbh),!is.na(avg_dry_standing_gm2))
+```
+
+```{r assign global variables}
+
+# define ggplot theme ####
+def_theme <- theme(legend.title = element_blank(),
+            legend.text = element_text(size = 12),
+            legend.position = "top",
+            legend.direction = "vertical",
+            axis.text = element_text(size = 14),
+            axis.title = element_text(size = 16),
+            plot.title = element_text(size = 18),
+            strip.background = element_blank(),
+            panel.grid = element_blank()
+            )
+
+# assign colors ####
+invasion_color <- scale_color_manual(values = c("deepskyblue", "red"))
+invasion_fill <- scale_fill_manual(values = c("deepskyblue", "red"))
+
+```
+
+<!-- ## Examine Correlations in Data -->
+```{r GGally correlations, eval=FALSE}
+
+fires_corr <- GGally::ggpairs(select(model_data, y_since_fire, fri15yr, frindex))
+
+veg_corr <- GGally::ggpairs(select(model_data, starts_with("avg_dry"), ends_with("all"), contains("pct"), litter_kg_m2, litter_volume_g_m3, avg_tree_ht, total_stems_100m2, avg_canopy_cover, plot_avg_veg_cover
+                                   )
+                            )
+# hist(model_data$litter_kg_m2*model_data$avg_pct_litter)
+
+clim15_corr <- GGally::ggpairs(
+      model_data %>% 
+            select(contains("15yr"), 
+                   # y_since_fire, frindex
+                   )
+)
+
+
+clim30_corr <- GGally::ggpairs(
+      model_data %>% 
+            select(contains("30yr"), y_since_fire, frindex, fri15yr, drought_index)
+)
+
+clim1_corr <- GGally::ggpairs(
+      model_data %>% 
+            select(contains("1yr")) %>% 
+            select(starts_with("avg"), starts_with("cv"), fire_days_1yr)
+)
+
+clim6mo_corr <- GGally::ggpairs(
+      model_data %>% 
+            select(contains("6mo")) %>% 
+            select(starts_with("avg"), starts_with("cv"), fire_days_6mo)
+)
+
+clim_corr15_1 <- GGally::ggpairs(
+      model_data %>% 
+            select(cv_1yr_vp..Pa., contains("15yr")) %>% 
+            select(starts_with("avg"), starts_with("cv"))
+)
+
+```
+
+## Model Comparison and Variable Selection
+
+Compared models of tick counts using a selected set of options for each explanatory variable.
+
+**Fire:** Years since fire, 15-year fire return interval, or fire return index
+
+**Litter:** Biomass (kg m^-2^), cover (%), depth (cm)
+
+**Ground vegetation:** Cover (%), standing biomass (g m^-2^)
+
+**Shrub layer vegetation:** Stems >1 m tall per m^2^
+
+**Tree vegetation:** Canopy cover (%), percent *Pinus* DBH, total DBH
+
+**Host relative abundance:** total dung clusters per 400 m^2^
+
+Use either Poisson or negative binomial distribution.
+
+
+
+```{r explore tick abundance model, eval=FALSE}
+
+library(lme4)
+library(MuMIn)
+#glmmadmb
+
+tick_glob <- glmer(
+  cbind(tick_abundance, trap_effort) ~ scale(frindex) + scale(fri15yr) + scale(y_since_fire) +
+    scale(litter_kg_m2) + scale(avg_pct_litter) + scale(plot_avg_veg_cover) +
+    scale(avg_canopy_cover) + (1|inst_name) + (1|plot_id),
+  data = model_data, 
+  family = "binomial",
+  na.action = "na.fail")
+summary(tick_glob)
+
+
+# options(mc.cores = parallel::detectCores())
+tick_glob_dredge <- dredge(
+      tick_glob, 
+      subset = c( !("scale(frindex)" && "scale(fri15yr)" && "scale(y_since_fire)"))## exclude models with all three variables
+      )
+tick_glob_delta3 <- filter(tick_glob_dredge, delta < 3) 
+
+tick_glob_delta3 %>% summarise(weight = sum(weight)) ## 0.746, 74.6% of weights
+
+summary(model.avg(tick_glob_dredge, subset = delta<3))
+
+tick_glob2 <- glmer(cbind(tick_abundance, trap_effort) ~ scale(y_since_fire) + scale(litter_kg_m2) + scale(avg_pct_litter) + scale(plot_avg_veg_cover) + scale(avg_canopy_cover) + (1|inst_name) + (1|plot_id),
+                   data = model_data, family = "binomial",
+                   na.action = "na.fail")
+tick_glob2_dredge <- dredge(tick_glob2)
+tick_glob2_delta3 <- filter(tick_glob2_dredge, delta < 3) 
+summary(model.avg(tick_glob2_dredge, subset = delta < 7))
+
+## Compare models with different fire frequency/return metrics ####
+m1 <- glmer(cbind(tick_abundance, trap_effort) ~ scale(y_since_fire) + scale(avg_pct_litter) + scale(litter_kg_m2) + scale(plot_avg_veg_cover) + scale(avg_canopy_cover) + (1|inst_name) + (1|plot_id), 
+            data = model_data, family = "binomial")
+summary(m1)
+r.squaredGLMM(m1)
+
+m2 <- glmer(cbind(tick_abundance, trap_effort) ~ scale(fri15yr) + scale(avg_pct_litter) + scale(litter_kg_m2) + scale(plot_avg_veg_cover) + scale(avg_canopy_cover) + (1|inst_name) + (1|plot_id), 
+            data = model_data, family = "binomial")
+summary(m2)
+
+m3 <- glmer(cbind(tick_abundance, trap_effort) ~ scale(frindex) + scale(avg_pct_litter) + scale(litter_kg_m2) + scale(plot_avg_veg_cover) + scale(avg_canopy_cover) + (1|inst_name) + (1|plot_id), 
+            data = model_data, family = "binomial")
+summary(m3)
+
+AIC(m1,m2,m3)
+AICc(m1,m2,m3)
+
+## Y_since_fire provides best fit
+
+## Compare Poisson & negative binomialmodels ####
+m1.nb <- glmer.nb(total_ticks ~ scale(y_since_fire) + scale(avg_pct_litter) + scale(litter_kg_m2) + scale(plot_avg_veg_cover) + scale(avg_canopy_cover) + (1|inst_name) + (1|plot_id), data = model_data)
+summary(m1.nb)
+
+AICc(m1, m1.nb)
+## Poisson model is "best", though change in AICc is only ~2.4
+
+# glmer.nb(total_ticks ~  (1|installation) + (1|plot_id), data = model_data)
+
+comp <- bayestestR::bayesfactor(m1, m2, m3, denominator = 1)
+## Bayes factor comparison indicates support for y_since_fire
+## Poisson and negative binomial distribution have similar support
+
+
+## Compare models with different litter varibales ####
+m1a <- glmer(cbind(tick_abundance, trap_effort) ~ scale(y_since_fire) + scale(avg_pct_litter) + scale(plot_avg_veg_cover) + scale(avg_canopy_cover) + (1|inst_name) + (1|plot_id), 
+             data = model_data, family = "binomial")
+
+m1b <- glmer(cbind(tick_abundance, trap_effort) ~ scale(y_since_fire) + scale(litter_kg_m2) + scale(plot_avg_veg_cover) + scale(avg_canopy_cover) + (1|inst_name) + (1|plot_id), 
+             data = model_data, family = "binomial")
+
+m1c <- glmer(cbind(tick_abundance, trap_effort) ~ scale(y_since_fire) + scale(litter_volume_g_m3) + scale(plot_avg_veg_cover) + scale(avg_canopy_cover) + (1|inst_name) + (1|plot_id), 
+             data = model_data, family = "binomial")
+
+# m1a.nb <- glmer.nb(total_ticks ~ scale(y_since_fire) + scale(avg_pct_litter) + scale(plot_avg_veg_cover) + scale(avg_canopy_cover) + (1|inst_name) + (1|plot_id), data = model_data)
+# 
+# m1b.nb <- glmer.nb(total_ticks ~ scale(y_since_fire) + scale(litter_kg_m2) + scale(plot_avg_veg_cover) + scale(avg_canopy_cover) + (1|inst_name) + (1|plot_id), data = model_data)
+
+AICc(m1a, m1b, m1c)
+comp2 <- bayestestR::bayesfactor(m1c,m1b,m1a)
+## model m1a, with pct litter cover, slightly favored
+# summary(m1a)
+# r.squaredGLMM(m1a)
+```
+
+
+## Update global model using best fire variable
+Add other vegetation variables to global model for comparison
+
+```{r tick global model 3, eval=FALSE}
+
+tick_glob3 <- glmer(cbind(tick_abundance, trap_effort) ~ scale(y_since_fire) + scale(avg_pct_litter) + scale(avg_litter_depth_all) + scale(avg_canopy_cover) + scale(plot_avg_veg_cover) + scale(avg_dry_standing_gm2) + scale(pct_pinus_dbh) + scale(total_stems_100m2) + scale(total_dbh) + scale(total_clusters1m) +  (1|inst_name) + (1|plot_id),
+                   data = model_data_noNA, family = "binomial",
+                   na.action = "na.fail",
+                   control=glmerControl(
+                         optimizer="bobyqa",optCtrl=list(maxfun=1000000)))
+
+tick_glob3_dredge <- dredge(
+      tick_glob3, 
+      fixed = "scale(y_since_fire)",
+      m.lim = c(1,5),
+      subset = !("scale(avg_pct_litter)" && "scale(avg_canopy_cover)") & !("scale(avg_pct_litter)" && "scale(plot_avg_veg_cover)") & !("scale(avg_dry_standing_gm2)" && "scale(total_stems_100m2)") & !("scale(avg_dry_standing_gm2)" && "scale(plot_avg_veg_cover)"))
+
+filter(tick_glob3_dredge, delta<7)
+filter(tick_glob3_dredge, delta<4)
+filter(tick_glob3_dredge, delta<2)
+
+mavg <- model.avg(tick_glob3_dredge, subset = delta<7)
+summary(mavg)
+```
+
+## Update global model with best fire and veg variables
+
+Add climate variables for comparison
+
+Keep host variable despite no effect - do comparison excluding later
+
+```{r tick glob mod3 climate variables, eval=FALSE}
+## Climate variables aggregated over the past 15 years ####
+tick_glob3a <- glmer(cbind(tick_abundance, trap_effort) ~ scale(y_since_fire) + scale(avg_pct_litter) + scale(avg_litter_depth_all) + scale(avg_dry_standing_gm2) + scale(pct_pinus_dbh) + scale(total_clusters1m) + scale(avg_15yr_srad..W.m.2.) + scale(avg_15yr_tmax..deg.c.) + scale(avg_15yr_tmin..deg.c.) + scale(avg_15yr_vp..Pa.) + scale(cv_15yr_srad..W.m.2.) + scale(cv_15yr_tmax..deg.c.) + scale(cv_15yr_tmin..deg.c.) + scale(cv_15yr_vp..Pa.) + scale(cv_15yr_prcp..mm.day.) + scale(avg_15yr_prcp..mm.day.) + scale(avg_15yr_fire_days) + (1|inst_name) + (1|plot_id),
+                   data = model_data_noNA, family = "binomial",
+                   na.action = "na.fail",
+                   control=glmerControl(
+                         optimizer="bobyqa",optCtrl=list(maxfun=1000000)))
+summary(tick_glob3a)
+
+tick_glob3a_dredge <- dredge(
+      tick_glob3a,
+      m.lim = c(6,10),
+      fixed = c("scale(y_since_fire)", "scale(avg_pct_litter)", "scale(avg_litter_depth_all)", "scale(avg_dry_standing_gm2)", "scale(pct_pinus_dbh)", "scale(total_clusters1m)"),
+      subset = !("scale(avg_15yr_tmax..deg.c.)" && "scale(avg_15yr_tmin..deg.c.)") & !("scale(avg_15yr_srad..W.m.2.)" && "scale(avg_15yr_tmin..deg.c.)") & !("scale(avg_15yr_srad..W.m.2.)" && "scale(avg_15yr_tmin..deg.c.)") & !("scale(avg_15yr_srad..W.m.2.)" && "scale(avg_15yr_vp..Pa.)") & !("scale(avg_15yr_srad..W.m.2.)" && "scale(cv_15yr_vp..Pa.)") & !("scale(avg_15yr_tmax..deg.c.)" && "scale(avg_15yr_vp..Pa.)") & !("scale(avg_15yr_tmax..deg.c.)" && "scale(cv_15yr_vp..Pa.)") & !("scale(avg_15yr_tmax..deg.c.)" && "scale(cv_15yr_prcp..mm.day.)") & !("scale(cv_15yr_vp..Pa.)" && "scale(avg_15yr_tmin..deg.c.)") & !("scale(cv_15yr_prcp..mm.day.)" && "scale(avg_15yr_tmin..deg.c.)") & !("scale(cv_15yr_tmax..deg.c.)" && "scale(avg_15yr_tmin..deg.c.)") & !("scale(avg_15yr_vp..Pa.)" && "scale(cv_15yr_tmax..deg.c.)") & !("scale(avg_15yr_vp..Pa.)" && "scale(cv_15yr_vp..Pa.)") & !("scale(avg_15yr_vp..Pa.)" && "scale(cv_15yr_prcp..mm.day.)") & !("scale(avg_15yr_fire_days)" && "scale(avg_15yr_prcp..mm.day.)") & !("scale(avg_15yr_fire_days)" && "scale(cv_15yr_srad..W.m.2.)")
+)
+filter(tick_glob3a_dredge, delta < 7)
+filter(tick_glob3a_dredge, delta < 4)
+filter(tick_glob3a_dredge, delta < 3)
+mavg <- model.avg(tick_glob3a_dredge, subset = delta < 4)
+summary(mavg)
+
+## 30-year climate variables ####
+tick_glob3b <- glmer(cbind(tick_abundance, trap_effort) ~ scale(y_since_fire) + scale(avg_pct_litter) + scale(avg_litter_depth_all) + scale(avg_dry_standing_gm2) + scale(pct_pinus_dbh) + scale(total_clusters1m) + scale(avg_30yr_srad..W.m.2.) + scale(avg_30yr_tmax..deg.c.) + scale(avg_30yr_tmin..deg.c.) + scale(avg_30yr_vp..Pa.) + scale(cv_30yr_srad..W.m.2.) + scale(cv_30yr_tmax..deg.c.) + scale(cv_30yr_tmin..deg.c.) + scale(cv_30yr_vp..Pa.) + scale(cv_30yr_prcp..mm.day.) + scale(avg_30yr_prcp..mm.day.) + scale(avg_30yr_fire_days) + (1|inst_name) + (1|plot_id),
+                   data = model_data_noNA, family = "binomial",
+                   na.action = "na.fail",
+                   control=glmerControl(
+                         optimizer="bobyqa",optCtrl=list(maxfun=1000000)))
+
+tick_glob3b_dredge <- dredge(
+      tick_glob3b,
+      m.lim = c(6,10),
+      
+      fixed = c("scale(y_since_fire)", "scale(avg_pct_litter)", "scale(avg_litter_depth_all)", "scale(avg_dry_standing_gm2)", "scale(pct_pinus_dbh)", "scale(total_clusters1m)"),
+      
+      subset = !("scale(avg_30yr_tmax..deg.c.)" && "scale(avg_30yr_tmin..deg.c.)") & !("scale(avg_30yr_srad..W.m.2.)" && "scale(avg_30yr_tmin..deg.c.)") & !("scale(avg_30yr_srad..W.m.2.)" && "scale(avg_30yr_tmin..deg.c.)") & !("scale(avg_30yr_srad..W.m.2.)" && "scale(avg_30yr_vp..Pa.)") & !("scale(avg_30yr_srad..W.m.2.)" && "scale(cv_30yr_vp..Pa.)") & !("scale(avg_30yr_tmax..deg.c.)" && "scale(avg_30yr_vp..Pa.)") & !("scale(avg_30yr_tmax..deg.c.)" && "scale(cv_30yr_vp..Pa.)") & !("scale(avg_30yr_tmax..deg.c.)" && "scale(cv_30yr_prcp..mm.day.)") & !("scale(cv_30yr_vp..Pa.)" && "scale(avg_30yr_tmin..deg.c.)") & !("scale(cv_30yr_prcp..mm.day.)" && "scale(avg_30yr_tmin..deg.c.)") & !("scale(cv_30yr_tmax..deg.c.)" && "scale(avg_30yr_tmin..deg.c.)") & !("scale(avg_30yr_vp..Pa.)" && "scale(cv_30yr_tmax..deg.c.)") & !("scale(avg_30yr_vp..Pa.)" && "scale(cv_30yr_vp..Pa.)") & !("scale(avg_30yr_vp..Pa.)" && "scale(cv_30yr_prcp..mm.day.)") & !("scale(avg_30yr_fire_days)" && "scale(avg_30yr_prcp..mm.day.)") & !("scale(avg_30yr_fire_days)" && "scale(cv_30yr_srad..W.m.2.)")
+)
+
+filter(tick_glob3b_dredge, delta < 4)
+filter(tick_glob3b_dredge, delta < 3)
+mavg <- model.avg(tick_glob3b_dredge, subset = delta < 4)
+summary(mavg)
+
+## Vp(2), CV prcp(3), tmin(4); three models have equal AICc, not more or less support than model without these variables
+
+## 1 year climate variables ####
+tick_glob3c <- glmer(cbind(tick_abundance, trap_effort) ~ scale(y_since_fire) + scale(avg_pct_litter) + scale(avg_litter_depth_all) + scale(avg_dry_standing_gm2) + scale(pct_pinus_dbh) + scale(total_clusters1m) + scale(avg_1yr_srad..W.m.2.) + scale(avg_1yr_tmax..deg.c.) + scale(avg_1yr_tmin..deg.c.) + scale(avg_1yr_vp..Pa.) + scale(cv_1yr_srad..W.m.2.) + scale(cv_1yr_tmax..deg.c.) + scale(cv_1yr_tmin..deg.c.) + scale(cv_1yr_vp..Pa.) + scale(cv_1yr_prcp..mm.day.) + scale(avg_1yr_prcp..mm.day.) + scale(fire_days_1yr) + (1|inst_name) + (1|plot_id),
+                   data = model_data_noNA, family = "binomial",
+                   na.action = "na.fail",
+                   control=glmerControl(
+                         optimizer="bobyqa",optCtrl=list(maxfun=1000000)))
+
+tick_glob3c_dredge <- dredge(
+      tick_glob3c,
+      m.lim = c(6,10),
+      
+      fixed = c("scale(y_since_fire)", "scale(avg_pct_litter)", "scale(avg_litter_depth_all)", "scale(avg_dry_standing_gm2)", "scale(pct_pinus_dbh)", "scale(total_clusters1m)"),
+      
+      subset = 
+            !("scale(avg_1yr_srad..W.m.2.)" && "scale(avg_1yr_tmax..deg.c.)") &
+            !("scale(avg_1yr_srad..W.m.2.)" && "scale(avg_1yr_prcp..mm.day.)") &
+            !("scale(avg_1yr_srad..W.m.2.)" && "scale(cv_1yr_srad..W.m.2.)") &
+            # !("scale(avg_1yr_srad..W.m.2.)" && "scale(avg_1yr_vp..Pa.)") &
+            !("scale(avg_1yr_tmax..deg.c.)" && "scale(avg_1yr_tmin..deg.c.)") & 
+            !("scale(avg_1yr_tmax..deg.c.)" && "scale(avg_1yr_vp..Pa.)") &
+            !("scale(avg_1yr_tmax..deg.c.)" && "scale(cv_1yr_srad..W.m.2.)") &
+            !("scale(avg_1yr_tmax..deg.c.)" && "scale(cv_1yr_tmax..deg.c.)") &
+            !("scale(avg_1yr_tmax..deg.c.)" && "scale(cv_1yr_tmin..deg.c.)") &
+            !("scale(avg_1yr_tmax..deg.c.)" && "scale(cv_1yr_vp..Pa.)") &
+            
+            !("scale(avg_1yr_tmin..deg.c.)" && "scale(avg_1yr_vp..Pa.)") &
+            !("scale(avg_1yr_tmin..deg.c.)" && "scale(cv_1yr_srad..W.m.2.)") &
+            !("scale(avg_1yr_tmin..deg.c.)" && "scale(cv_1yr_tmax..deg.c.)") &
+            !("scale(avg_1yr_tmin..deg.c.)" && "scale(cv_1yr_tmin..deg.c.)") &
+            !("scale(avg_1yr_tmin..deg.c.)" && "scale(cv_1yr_vp..Pa.)") &
+            
+            !("scale(avg_1yr_vp..Pa.)" && "scale(cv_1yr_prcp..mm.day.)") &
+            !("scale(avg_1yr_vp..Pa.)" && "scale(cv_1yr_srad..W.m.2.)") &
+            !("scale(avg_1yr_vp..Pa.)" && "scale(cv_1yr_tmax..deg.c.)") &
+            !("scale(avg_1yr_vp..Pa.)" && "scale(cv_1yr_tmin..deg.c.)") &
+            !("scale(avg_1yr_vp..Pa.)" && "scale(cv_1yr_vp..Pa.)") &
+            
+            !("scale(avg_1yr_prcp..mm.day.)" && "scale(cv_1yr_vp..Pa.)") &
+            !("scale(avg_1yr_prcp..mm.day.)" && "scale(fire_days_1yr)") &
+            
+            !("scale(cv_1yr_srad..W.m.2.)" && "scale(cv_1yr_tmax..deg.c.)") &
+            !("scale(cv_1yr_srad..W.m.2.)" && "scale(cv_1yr_tmin..deg.c.)") &
+            !("scale(cv_1yr_srad..W.m.2.)" && "scale(cv_1yr_vp..Pa.)") &
+            
+            !("scale(cv_1yr_tmax..deg.c.)" && "scale(cv_1yr_tmin..deg.c.)") &
+            !("scale(cv_1yr_tmax..deg.c.)" && "scale(cv_1yr_vp..Pa.)") &
+            
+            !("scale(cv_1yr_tmin..deg.c.)" && "scale(cv_1yr_vp..Pa.)") &
+            
+            !("scale(cv_1yr_prcp..mm.day.)" && "scale(fire_days_1yr)")
+            
+)
+
+filter(tick_glob3c_dredge, delta < 4)
+filter(tick_glob3c_dredge, delta < 3)
+filter(tick_glob3c_dredge, delta < 2.1)
+mavg <- model.avg(tick_glob3c_dredge, subset = delta<4)
+summary(mavg)
+# CV of vapor pressure improves (delta <.25) on the no climate variable model
+# avg_vp and cv_vp have similar average weighting/effect across models
+
+
+## 6 month climate variables ####
+tick_glob3d <- glmer(cbind(tick_abundance, trap_effort) ~ scale(y_since_fire) + scale(avg_pct_litter) + scale(avg_litter_depth_all) + scale(avg_dry_standing_gm2) + scale(pct_pinus_dbh) + scale(total_clusters1m) + scale(avg_6mo_srad..W.m.2.) + scale(avg_6mo_tmax..deg.c.) + scale(avg_6mo_tmin..deg.c.) + scale(avg_6mo_vp..Pa.) + scale(cv_6mo_srad..W.m.2.) + scale(cv_6mo_tmax..deg.c.) + scale(cv_6mo_tmin..deg.c.) + scale(cv_6mo_vp..Pa.) + scale(cv_6mo_prcp..mm.day.) + scale(avg_6mo_prcp..mm.day.) + scale(fire_days_6mo) + (1|inst_name) + (1|plot_id),
+                   data = model_data_noNA, family = "binomial",
+                   na.action = "na.fail",
+                   control=glmerControl(
+                         optimizer="bobyqa",optCtrl=list(maxfun=1000000)))
+
+tick_glob3d_dredge <- dredge(
+      tick_glob3d,
+      m.lim = c(6,10),
+      
+      fixed = c("scale(y_since_fire)", "scale(avg_pct_litter)", "scale(avg_litter_depth_all)", "scale(avg_dry_standing_gm2)", "scale(pct_pinus_dbh)", "scale(total_clusters1m)"),
+      
+      subset = 
+            !("scale(avg_6mo_srad..W.m.2.)" && "scale(avg_6mo_tmax..deg.c.)") &
+            !("scale(avg_6mo_srad..W.m.2.)" && "scale(avg_6mo_tmin..deg.c.)") &
+            !("scale(avg_6mo_srad..W.m.2.)" && "scale(avg_6mo_vp..Pa.)") &
+            # !("scale(avg_6mo_srad..W.m.2.)" && "scale(avg_6mo_prcp..mm.day.)") &
+            !("scale(avg_6mo_srad..W.m.2.)" && "scale(cv_6mo_srad..W.m.2.)") &
+            !("scale(avg_6mo_srad..W.m.2.)" && "scale(cv_6mo_prcp..mm.day.)") &
+            
+            !("scale(avg_6mo_tmax..deg.c.)" && "scale(avg_6mo_tmin..deg.c.)") & 
+            !("scale(avg_6mo_tmax..deg.c.)" && "scale(avg_6mo_vp..Pa.)") &
+            !("scale(avg_6mo_tmax..deg.c.)" && "scale(cv_6mo_srad..W.m.2.)") &
+            !("scale(avg_6mo_tmax..deg.c.)" && "scale(cv_6mo_tmax..deg.c.)") &
+            !("scale(avg_6mo_tmax..deg.c.)" && "scale(cv_6mo_tmin..deg.c.)") &
+            !("scale(avg_6mo_tmax..deg.c.)" && "scale(cv_6mo_vp..Pa.)") &
+            !("scale(avg_6mo_tmax..deg.c.)" && "scale(cv_6mo_prcp..mm.day.)") &
+            !("scale(avg_6mo_tmax..deg.c.)" && "scale(fire_days_6mo)") &
+            
+            !("scale(avg_6mo_tmin..deg.c.)" && "scale(avg_6mo_vp..Pa.)") &
+            !("scale(avg_6mo_tmin..deg.c.)" && "scale(avg_6mo_prcp..mm.day.)") &
+            !("scale(avg_6mo_tmin..deg.c.)" && "scale(cv_6mo_srad..W.m.2.)") &
+            !("scale(avg_6mo_tmin..deg.c.)" && "scale(cv_6mo_tmax..deg.c.)") &
+            !("scale(avg_6mo_tmin..deg.c.)" && "scale(cv_6mo_tmin..deg.c.)") &
+            !("scale(avg_6mo_tmin..deg.c.)" && "scale(cv_6mo_vp..Pa.)") &
+            !("scale(avg_6mo_tmin..deg.c.)" && "scale(cv_6mo_prcp..mm.day.)") &
+            !("scale(avg_6mo_tmin..deg.c.)" && "scale(fire_days_6mo)") &
+            
+            !("scale(avg_6mo_vp..Pa.)" && "scale(avg_6mo_prcp..mm.day.)") &
+            !("scale(avg_6mo_vp..Pa.)" && "scale(cv_6mo_srad..W.m.2.)") &
+            !("scale(avg_6mo_vp..Pa.)" && "scale(cv_6mo_tmax..deg.c.)") &
+            !("scale(avg_6mo_vp..Pa.)" && "scale(cv_6mo_tmin..deg.c.)") &
+            !("scale(avg_6mo_vp..Pa.)" && "scale(cv_6mo_vp..Pa.)") &
+            !("scale(avg_6mo_vp..Pa.)" && "scale(cv_6mo_prcp..mm.day.)") &
+            !("scale(avg_6mo_vp..Pa.)" && "scale(fire_days_6mo)") &
+            
+            !("scale(avg_6mo_prcp..mm.day.)" && "scale(cv_6mo_prcp..mm.day.)") &
+            !("scale(avg_6mo_prcp..mm.day.)" && "scale(fire_days_6mo)") &
+            
+            !("scale(cv_6mo_srad..W.m.2.)" && "scale(cv_6mo_tmax..deg.c.)") &
+            !("scale(cv_6mo_srad..W.m.2.)" && "scale(cv_6mo_tmin..deg.c.)") &
+            # !("scale(cv_6mo_srad..W.m.2.)" && "scale(cv_6mo_vp..Pa.)") &
+            !("scale(cv_6mo_srad..W.m.2.)" && "scale(cv_6mo_prcp..mm.day.)") &
+            
+            !("scale(cv_6mo_tmax..deg.c.)" && "scale(cv_6mo_tmin..deg.c.)") &
+            !("scale(cv_6mo_tmax..deg.c.)" && "scale(cv_6mo_vp..Pa.)") &
+            
+            !("scale(cv_6mo_tmin..deg.c.)" && "scale(cv_6mo_vp..Pa.)") &
+            
+            !("scale(cv_6mo_prcp..mm.day.)" && "scale(fire_days_6mo)")
+            
+)
+
+filter(tick_glob3d_dredge, delta < 3)
+mavg <- model.avg(tick_glob3d_dredge, subset = delta<4)
+summary(mavg)
+# 6-month variables don't improve on the no climate variables model
+
+## Conclude that CV or average vapor pressure during the previous year useful 
+## in predicting tick abundance 
+```
+
+
+## "Best" Global Model of Tick Abundance
+
+```{r best global model}
+library(lme4)
+model_data_noNA <- model_data_noNA %>% 
+  mutate(deer_other = deer + cow + turkey + other)# dung variable sans rabbit
+
+
+## replace cv_1yr_vp..Pa. with avg_1yr_vp..Pa. 
+## similar support, more interpretable
+tick_model <- glmer(cbind(tick_abundance, trap_effort) ~ d_since_fire + avg_pct_litter + avg_litter_depth_all + avg_dry_standing_gm2 + avg_canopy_cover + pct_pinus_dbh + deer_other + avg_1yr_vp..Pa. + (1|inst_name/plot_id),
+                   data = model_data_noNA, family = "binomial",
+                   na.action = "na.fail",
+                   control=glmerControl(
+                         optimizer="bobyqa",optCtrl=list(maxfun=1000000)))
+plot(tick_model)
+AICc(tick_model)
+summary(tick_model)
+plot(DHARMa::simulateResiduals(tick_model))
+
+ticks_trap_model <- glmer.nb(ticks_per_trap ~ d_since_fire + avg_pct_litter + avg_litter_depth_all + avg_dry_standing_gm2 + avg_canopy_cover + pct_pinus_dbh + deer_other + avg_1yr_vp..Pa. + (1|inst_name/plot_id),
+                   data = model_data_noNA, 
+                   # family = poisson(link = "log"),
+                   na.action = "na.fail",
+                   # control = glmerControl(deriv.method = "Richardson")
+                   # control=glmerControl(
+                         # optimizer="bobyqa",optCtrl=list(maxfun=1000000))
+                   )
+plot(ticks_trap_model)
+AICc(ticks_trap_model)
+summary(ticks_trap_model)
+sr <- simulateResiduals(ticks_trap_model) 
+plot(sr)
+# testDispersion(ticks_trap_model)
+# testOverdispersion(ticks_trap_model)
+# testQuantiles(ticks_trap_model)
+# testResiduals(ticks_trap_model)
+# testUniformity(ticks_trap_model)
+# testZeroInflation(ticks_trap_model)
+
+
+# sjPlot::plot_model(ticks_trap_model, show.values = TRUE)
+getME(ticks_trap_model, "glmer.nb.theta")
+
+tm <- update(ticks_trap_model, family = MASS::negative.binomial(theta = 139))
+summary(tm)
+printCoefmat(coef(summary(tm)), digits = 3)
+printCoefmat(coef(summary(ticks_trap_model)), digits = 3)
+
+
+## Need to add small value to remove zeroes from the data for the Gamma distribution
+## Adding .01 is perhaps similar to a weak prior of missed detection - probably
+## at least one tick on the landscape but we didn't recover it.
+model_data_noNA$ticks_per_trap001 <- model_data_noNA$ticks_per_trap + .001
+ticks_traps_gamma_model <- glmer(ticks_per_trap001 ~ d_since_fire + avg_pct_litter + avg_litter_depth_all + avg_dry_standing_gm2 + avg_canopy_cover + pct_pinus_dbh + total_clusters1m + avg_1yr_vp..Pa. + (1|inst_name/plot_id),
+                   data = model_data_noNA, 
+                   family = Gamma(link = "log"),
+                   na.action = "na.fail",
+                   # control = glmerControl(deriv.method = "Richardson")
+                   # control=glmerControl(
+                         # optimizer="bobyqa",optCtrl=list(maxfun=1000000))
+                   )
+plot(ticks_traps_gamma_model)
+summary(ticks_traps_gamma_model)
+
+ticks_traps_gamma_scl <- glmer(ticks_per_trap001 ~ scale(d_since_fire) + 
+                          scale(avg_pct_litter) + 
+                          scale(avg_litter_depth_all) +
+                          scale(avg_dry_standing_gm2) +
+                          # scale(pct_pinus_dbh) +
+                          scale(avg_canopy_cover) +
+                          scale(deer_other) +
+                          scale(avg_1yr_vp..Pa.) +
+                            (1|inst_name/plot_id),
+                   data = model_data_noNA, 
+                   family = Gamma(link = "log"),
+                   na.action = "na.fail",
+                   # control = glmerControl(deriv.method = "Richardson")
+                   control=glmerControl(
+                         optimizer="bobyqa",optCtrl=list(maxfun=1000000))
+                   )
+plot(ticks_traps_gamma_scl)
+simulateResiduals(ticks_traps_gamma_scl) %>% plot()
+summary(ticks_traps_gamma_scl)
+testResiduals(ticks_traps_gamma_scl)
+
+# tm2 <- glmer(cbind(tick_abundance, trap_effort) ~ y_since_fire + avg_pct_litter + avg_litter_depth_all + avg_dry_standing_gm2 + pct_pinus_dbh + total_clusters1m + cv_1yr_vp..Pa. + (1|inst_name/plot_id),
+#                    data = model_data_noNA, family = "binomial",
+#                    na.action = "na.fail",
+#                    control=glmerControl(
+#                          optimizer="bobyqa",optCtrl=list(maxfun=1000000)))
+# AICc(tick_model,tm2)
+
+
+model_corr <- GGally::ggpairs(model_data_noNA %>% select(
+      y_since_fire, avg_pct_litter, avg_litter_depth_all, avg_dry_standing_gm2, pct_pinus_dbh, avg_canopy_cover, total_clusters1m, avg_1yr_vp..Pa.
+))
+
+model_data_noNA$cbnd_abundance <- cbind(
+  model_data_noNA$tick_abundance, model_data_noNA$trap_effort)
+
+tick_model_scaled <- glmer(cbnd_abundance ~ scale(d_since_fire) + 
+                          scale(avg_pct_litter) + 
+                          scale(avg_litter_depth_all) +
+                          scale(avg_dry_standing_gm2) +
+                          # scale(pct_pinus_dbh) +
+                          scale(avg_canopy_cover) +
+                          scale(deer_other) +
+                          scale(avg_1yr_vp..Pa.) +
+                            # (1|inst_name) + (1|plot_id), 
+                          (1|inst_name/plot_id),
+                   data = model_data_noNA, family = "binomial",
+                   na.action = "na.fail",
+                   control=glmerControl(
+                         optimizer="bobyqa",optCtrl=list(maxfun=1000000)))
+plot(tick_model_scaled)
+AICc(tick_model_scaled)# 363.8
+summary(tick_model_scaled)
+plot(DHARMa::simulateResiduals(tick_model_scaled))
+## Weak predictors: dung clusters -- vapor pressure -- canopy cover (w/pct pinus)
+
+
+ticks_traps_model_scaled <- glmer.nb(ticks_per_trap ~ scale(d_since_fire) + 
+                          scale(avg_pct_litter) + 
+                          scale(avg_litter_depth_all) +
+                          scale(avg_dry_standing_gm2) +
+                          # scale(pct_pinus_dbh) +
+                          scale(avg_canopy_cover) +
+                          scale(deer_other) +
+                          scale(avg_1yr_vp..Pa.) +
+                            # (1|inst_name) + (1|plot_id), 
+                          (1|inst_name/plot_id),
+                   data = model_data_noNA, 
+                   na.action = "na.fail")
+summary(ticks_traps_model_scaled)
+
+plot(ticks_traps_model_scaled) 
+plot(ticks_traps_gamma_scl)
+fixef(ticks_traps_gamma_scl)
+fixef(ticks_traps_model_scaled)
+
+DHARMa::simulateResiduals(ticks_traps_model_scaled) %>% plot()# negative binomial
+DHARMa::simulateResiduals(ticks_traps_gamma_scl) %>% plot()# Gamma(link = "log")
+# this gamma assumption looks bad, especially in the quantile deviations
+# quantile regression?
+
+sjPlot::plot_model(ticks_traps_model_scaled, show.values = TRUE, title = "Ticks per trap, negative binomial") |
+  sjPlot::plot_model(ticks_traps_gamma_scl, show.values = TRUE, title = "Ticks per trap, Gamma")
+# estimates may be just a little overconfident, especially for Gamma model
+
+sjPlot::plot_model(ticks_traps_model_scaled, type = "re", show.values = TRUE, sort.est = TRUE, grid = FALSE, colors = "bw")[[2]]/
+  sjPlot::plot_model(ticks_traps_gamma_scl, type = "re", show.values = TRUE, sort.est = TRUE, grid = FALSE, colors = "bw")[[2]]
+  
+sjPlot::plot_model(ticks_traps_model_scaled, type = "pred", pred.type = "fe", show.data = FALSE, grid = T)/
+sjPlot::plot_model(ticks_traps_gamma_scl, type = "pred", pred.type = "fe", show.data = FALSE, grid = T)
+
+```
+
+## Explore Zero-inflated Modeling
+
+Not sure that this is necessary since we recovered at least one tick from more than half the plots.
+
+```{r tick vs no ticks}
+model_data %>% 
+      mutate(ticks_present = ifelse(tick_abundance==0, "no ticks", "1+ ticks")) %>% 
+ggplot() +
+      geom_bar(aes(x=ticks_present))
+```
+
+```{r zi modeling, eval = FALSE}
+# library(mgcv)
+library(glmmTMB)
+
+## ZI-negative binomial
+zip_m1a <- glmmTMB(ticks_per_trap ~ d_since_fire + 
+                          avg_pct_litter + 
+                          avg_litter_depth_all +
+                          avg_dry_standing_gm2 +
+                          avg_canopy_cover +
+                          pct_pinus_dbh +
+                          total_clusters1m +
+                          avg_1yr_vp..Pa. +
+                          (1|inst_name/plot_id), 
+                   zi = ~1,
+                   data = model_data_noNA, family = truncated_nbinom2(link = "log"),
+                   control = glmmTMBControl(optCtrl=list(iter.max=1e3,eval.max=1e3)))
+sr_zip <- simulateResiduals(zip_m1a)
+plot(sr_zip)
+testResiduals(sr_zip)
+testZeroInflation(sr_zip)
+fixef(zip_m1a)
+summary(zip_m1a)
+sjPlot::plot_model(zip_m1a, show.values = T)
+
+zip_m1b <- glmmTMB(ticks_per_trap01 ~ d_since_fire + avg_pct_litter + avg_litter_depth_all + avg_dry_standing_gm2 + avg_canopy_cover + pct_pinus_dbh + total_clusters1m + avg_1yr_vp..Pa. +
+                          (1|inst_name/plot_id), 
+                   zi = ~1,
+                   data = model_data_noNA, family = ziGamma(link = "log"),
+                   control = glmmTMBControl(optCtrl=list(iter.max=1e3,eval.max=1e3)))
+sr_zipb <- simulateResiduals(zip_m1b)
+plot(sr_zipb)
+testZeroInflation(sr_zipb)
+
+fixef(zip_m1a)
+fixef(zip_m1b)
+```
+
+## Compare ZIP to no-zi model
+Assess residual plots and test for zero inflation of the ZIP-model and the regular Poisson model.
+
+```{r compare zip to no zi, eval = FALSE}
+sr <- DHARMa::simulateResiduals(zip_m1a)
+plot(sr)
+DHARMa::testZeroInflation(sr)
+sr2 <- DHARMa::simulateResiduals(tick_model_scaled)
+plot(sr2)
+DHARMa::testZeroInflation(sr2)
+```
+
+
+## Bayesian Models
+
+```{r bayesian modeling, eval=FALSE}
+library(rstanarm)
+library(bayesplot)
+options(mc.cores = parallel::detectCores())
+
+bayes_mod <- stan_glmer(
+      tpt ~ d_since_fire +
+        avg_pct_litter +
+        avg_litter_depth_all +
+        avg_dry_standing_gm2 +
+        avg_canopy_cover +
+        total_clusters1m +
+        avg_1yr_vp..Pa. +
+        # (1|inst_name/plot_id),
+        (1|inst_name) + (1|plot_id),
+                           
+      data = sem_data, 
+      # family = Gamma(link = "log"),
+      family = poisson(link = "log"),
+      # prior = 
+      QR = FALSE,
+      adapt_delta = 0.99,
+      iter = 2500,
+      cores = 3,
+      seed = 1234
+)
+bayes_mod
+
+## posterior_interval() to obtain Bayesian uncertainty intervals
+ci95 <- posterior_interval(bayes_mod, prob = 0.95, pars = names(fixef(bayes_mod)))
+round(ci95, 2)
+ci89 <- posterior_interval(bayes_mod, prob = 0.89, pars = names(fixef(bayes_mod)))
+round(ci89, 2)
+
+
+
+## shinystan provides tools to visualize posterior & diagnose any problems with
+## Markov chains
+library(shinystan)
+launch_shinystan(bayes_mod, ppd = FALSE)
+
+## Programmatic model evaluation
+y_rep <- posterior_predict(bayes_mod, seed = 1234)
+dim(y_rep)
+boxplot(sweep(y_rep[,]))
+
+print(bayes_mod, digits = 3)
+summary(bayes_mod)
+plot(bayes_mod, regex_pars = "inst_name")
+
+
+
+posterior_vs_prior(bayes_mod, pars = "beta")
+d <- posterior_vs_prior(bayes_mod, pars = "varying")
+d$data <- d$data %>% 
+  filter(str_detect(parameter, "inst_name"))
+
+nd <- data.frame()
+
+ppd_df <- data.frame(fire = runif(n = nrow(ppd), min = 10, max = 5000),
+                     ticks = c(ppd))
+ggplot(ppd_df, aes(fire, ticks)) + 
+  geom_point() + 
+  geom_smooth()
+
+pairs(bayes_mod, pars = c("d_since_fire", "avg_litter_depth_all"))
+
+# bayes_mod_r2 <- rstanarm::bayes_R2(bayes_mod)
+# print(summary(bayes_mod_r2))
+
+
+## Litter cover
+bayes1 <- rstanarm::stan_glmer(
+      cbnd_abundance ~ scale(y_since_fire) + scale(avg_pct_litter) + scale(plot_avg_veg_cover) + scale(avg_canopy_cover) + (1|inst_name) + (1|plot_id),
+      data = model_data_noNA, 
+      family = "binomial",
+      diagnostic_file = file.path(tempdir(), "df1.csv"))
+
+print(bayes1, digits = 3)
+bayes1_r2 <- rstanarm::bayes_R2(bayes1)
+print(summary(bayes1_r2))
+plot(bayes1)
+
+## Litter biomass
+bayes2 <- rstanarm::stan_glmer(
+      cbnd_abundance ~ scale(y_since_fire) + scale(litter_kg_m2) + scale(plot_avg_veg_cover) + scale(avg_canopy_cover) + (1|inst_name) + (1|plot_id),
+      data = model_data_noNA, 
+      family = "binomial",
+      diagnostic_file = file.path(tempdir(), "df2.csv"))
+print(bayes2, digits = 3)
+bayes2_r2 <- rstanarm::bayes_R2(bayes2)
+print(summary(bayes2_r2))
+plot(bayes2)
+
+bayestestR::bayesfactor(bayes1, bayes2, effects = "all")
+## Effectively equal support for litter cover or litter mass.
+
+```
+
+## Explore Fire ~ Climate Relationship
+
+### Time Since Fire
+
+```{r global mod time since fire, eval = FALSE}
+fire_glob_mod <- glmer.nb(
+      (d_since_fire) ~ 
+            scale(drought_index) + scale(avg_15yr_srad..W.m.2.) + scale(avg_15yr_tmax..deg.c.) + scale(avg_15yr_tmin..deg.c.) + scale(avg_15yr_vp..Pa.) + scale(cv_15yr_srad..W.m.2.) + scale(cv_15yr_tmax..deg.c.) + scale(cv_15yr_tmin..deg.c.) + scale(cv_15yr_vp..Pa.) + scale(cv_15yr_prcp..mm.day.) + scale(avg_15yr_prcp..mm.day.) + scale(avg_15yr_fire_days) + scale(cv_15yr_fire_days) + (1 | inst_name/plot_id), 
+      data = model_data_noNA,
+      # family = "poisson",
+      # control = lmerControl(
+            # optimizer="bobyqa", optCtrl=list(maxfun=1000000)),
+      na.action = "na.fail"
+            )
+summary(fire_glob_mod)
+getME(fire_glob_mod, "glmer.nb.theta")
+plot(DHARMa::simulateResiduals(fire_glob_mod))
+
+dfire_mod_dredge <- dredge(
+      fire_glob_mod,
+      # m.lim = c(6,10),
+      #fixed = c(),
+      subset = 
+            !("scale(avg_15yr_srad..W.m.2.)" && "scale(avg_15yr_tmin..deg.c.)") & 
+            !("scale(avg_15yr_srad..W.m.2.)" && "scale(avg_15yr_tmin..deg.c.)") & 
+            !("scale(avg_15yr_srad..W.m.2.)" && "scale(avg_15yr_vp..Pa.)") &
+            !("scale(avg_15yr_srad..W.m.2.)" && "scale(cv_15yr_vp..Pa.)") &
+            
+            !("scale(avg_15yr_tmax..deg.c.)" && "scale(avg_15yr_tmin..deg.c.)") & 
+            !("scale(avg_15yr_tmax..deg.c.)" && "scale(avg_15yr_vp..Pa.)") &
+            !("scale(avg_15yr_tmax..deg.c.)" && "scale(cv_15yr_vp..Pa.)") &
+            
+            !("scale(avg_15yr_tmin..deg.c.)" && "scale(avg_15yr_vp..Pa.)") &
+            !("scale(avg_15yr_tmin..deg.c.)" && "scale(cv_15yr_vp..Pa.)") &
+            
+            !("scale(cv_15yr_srad..W.m.2.)" && "scale(cv_15yr_prcp..mm.day.)") &
+            !("scale(cv_15yr_srad..W.m.2.)" && "scale(cv_15yr_fire_days)") &
+            
+            !("scale(cv_15yr_tmax..deg.c.)" && "scale(cv_15yr_tmin..deg.c.)") &
+            !("scale(cv_15yr_tmax..deg.c.)" && "scale(cv_15yr_fire_days)") &
+            
+            !("scale(cv_15yr_tmin..deg.c.)" && "scale(cv_15yr_vp..Pa.)") &
+            
+            !("scale(avg_15yr_prcp..mm.day.)" && "scale(avg_15yr_fire_days)") &
+            !("scale(avg_15yr_prcp..mm.day.)" && "scale(cv_15yr_fire_days)") &
+            !("scale(cv_15yr_prcp..mm.day.)" && "scale(avg_15yr_fire_days)") &
+            !("scale(cv_15yr_prcp..mm.day.)" && "scale(cv_15yr_fire_days)") &
+            
+            !("scale(avg_15yr_fire_days)" && "scale(cv_15yr_fire_days)")
+      )
+
+filter(dfire_mod_dredge, delta <2)
+model.avg(dfire_mod_dredge, subset = delta<4) %>% summary(.)
+```
+
+
+```{r y or d since fire}
+dfire_mod <- glmer.nb(d_since_fire ~ 
+                        scale(fri15yr) +
+                     # scale(avg_15yr_fire_days) +
+                     # scale(avg_15yr_vp..Pa.) +
+                     scale(cv_15yr_srad..W.m.2.) +
+                     # scale(cv_15yr_tmax..deg.c.) +
+                     # scale(cv_15yr_vp..Pa.) +
+                     # scale(avg_15yr_prcp..mm.day.) +
+                     # scale(drought_index) +
+                        (1|inst_name),
+                   # family = poisson(link = "log"),
+                   data = model_data_noNA)
+plot(dfire_mod)
+BIC(dfire_mod)
+plot(DHARMa::simulateResiduals(dfire_mod))
+summary(dfire_mod)
+sjPlot::plot_model(dfire_mod, show.values = TRUE, type = "std")
+sjPlot::plot_model(dfire_mod, show.data = TRUE, type = "pred")
+sjPlot::plot_model(dfire_mod, type = "re")
+
+# getME(dfire_mod, "glmer.nb.theta")
+## Installation practice (fire return interval) far outweighs climate/weather
+## and renders the installation level random effect moot.
+
+dfire_mod_poi <- glmer(d_since_fire ~ scale(fri15yr) + scale(cv_15yr_srad..W.m.2.) + (1|inst_name),
+                       data = model_data_noNA,
+                       family = poisson(link = "log"))
+plot(dfire_mod)
+BIC(dfire_mod)
+DHARMa::simulateResiduals(dfire_mod_poi) %>% plot()
+## muy mal
+
+dfire_mod_log <- lmer(log(d_since_fire) ~ 
+                        scale(fri15yr) +
+                        # scale(avg_15yr_fire_days) +
+                     # scale(avg_15yr_vp..Pa.) + 
+                     scale(cv_15yr_srad..W.m.2.) +
+                     # scale(cv_15yr_tmax..deg.c.) +
+                     # scale(cv_15yr_vp..Pa.) +
+                     # scale(avg_15yr_prcp..mm.day.) +
+                     # scale(drought_index) + 
+                        (1|inst_name),
+                   # family = poisson(link = "log"),
+                   data = model_data_noNA)
+summary(dfire_mod_log)
+plot(dfire_mod_log)
+plot(DHARMa::simulateResiduals(dfire_mod_log))
+sjPlot::plot_model(dfire_mod_log, show.values = TRUE, type = "std")
+sjPlot::plot_model(dfire_mod_log, show.data = TRUE, type = "pred")
+sjPlot::plot_model(dfire_mod_log, type = "re")
+
+## boundary singular warning w/plot_id r.e. b/c plot_id variance is essentially
+### zero, indicating that only an installation level r.e. is necessary
+### Makes sense b/c few plots repeated sampled and few of those had change in
+### fire history.
+# lmtest::lrtest(yfire_mod, yfire_mod_log)
+# AICc(yfire_mod, yfire_mod_log)
+# sjPlot::plot_model(yfire_mod)
+# sjPlot::plot_model(yfire_mod_log) + ylab("log y since fire")
+# r.squaredGLMM(yfire_mod_log)
+## log-log relationship between y since fire and fri15yr is more linear
+# dfire_mod_sr <- DHARMa::simulateResiduals(dfire_mod)
+# plot(dfire_mod_sr)
+# yfirmodlog_sr <- DHARMa::simulateResiduals(yfire_mod_log)
+# plot(yfirmodlog_sr)
+
+## Days Since Fire ####
+# dfire_mod <- glmer(d_since_fire ~ (fri15yr) + (1|inst_name),
+                   # data = model_data_noNA, family = poisson)
+# summary(dfire_mod)
+# plot(dfire_mod)
+# plot(DHARMa::simulateResiduals(dfire_mod))
+
+# dfire_mod.nb <- glmer.nb(d_since_fire ~ fri15yr + (1|inst_name),
+                   # data = model_data_noNA)
+# summary(dfire_mod.nb)
+# plot(dfire_mod.nb)
+# plot(DHARMa::simulateResiduals(dfire_mod.nb))
+
+# lmtest::lrtest(dfire_mod, dfire_mod.nb)
+```
+
+Very weak relationship(s) between years since fire and climate variables. Installation prescribed fire practices (fire return interval) far outweigh the influence of climate/weather.
+
+### Fire return interval model
+
+```{r fri glob mod, eval=FALSE}
+summary(model_data_noNA$fri15yr)
+hist(model_data_noNA$fri15yr)
+hist(log(model_data_noNA$fri15yr))
+
+fri_glob_mod <- lmer(
+      fri15yr ~ 
+            scale(drought_index) + scale(avg_15yr_srad..W.m.2.) + scale(avg_15yr_tmax..deg.c.) + scale(avg_15yr_tmin..deg.c.) + scale(avg_15yr_vp..Pa.) + scale(cv_15yr_srad..W.m.2.) + scale(cv_15yr_tmax..deg.c.) + scale(cv_15yr_tmin..deg.c.) + scale(cv_15yr_vp..Pa.) + scale(cv_15yr_prcp..mm.day.) + scale(avg_15yr_prcp..mm.day.) + scale(avg_15yr_fire_days) + scale(cv_15yr_fire_days) + (1 | inst_name/plot_id), 
+      data = model_data_noNA,
+      control = lmerControl(
+            optimizer="bobyqa", optCtrl=list(maxfun=1000000)),
+      na.action = "na.fail"
+            )
+
+fri_mod_dredge <- dredge(
+      fri_glob_mod,
+      # fixed = "scale(drought_index)",
+      subset = !("scale(avg_15yr_srad..W.m.2.)" && "scale(avg_15yr_tmax..deg.c.)") & 
+            !("scale(avg_15yr_srad..W.m.2.)" && "scale(avg_15yr_tmin..deg.c.)") & 
+            !("scale(avg_15yr_srad..W.m.2.)" && "scale(avg_15yr_vp..Pa.)") &
+            !("scale(avg_15yr_srad..W.m.2.)" && "scale(cv_15yr_vp..Pa.)") &
+            
+            !("scale(avg_15yr_tmax..deg.c.)" && "scale(avg_15yr_tmin..deg.c.)") & 
+            !("scale(avg_15yr_tmax..deg.c.)" && "scale(avg_15yr_vp..Pa.)") &
+            !("scale(avg_15yr_tmax..deg.c.)" && "scale(cv_15yr_vp..Pa.)") &
+            
+            !("scale(avg_15yr_tmin..deg.c.)" && "scale(avg_15yr_vp..Pa.)") &
+            !("scale(avg_15yr_tmin..deg.c.)" && "scale(cv_15yr_vp..Pa.)") &
+            
+            !("scale(cv_15yr_srad..W.m.2.)" && "scale(cv_15yr_prcp..mm.day.)") &
+            !("scale(cv_15yr_srad..W.m.2.)" && "scale(cv_15yr_fire_days)") &
+            
+            !("scale(cv_15yr_tmax..deg.c.)" && "scale(cv_15yr_tmin..deg.c.)") &
+            !("scale(cv_15yr_tmax..deg.c.)" && "scale(cv_15yr_fire_days)") &
+            
+            !("scale(cv_15yr_tmin..deg.c.)" && "scale(cv_15yr_vp..Pa.)") &
+            
+            !("scale(avg_15yr_prcp..mm.day.)" && "scale(avg_15yr_fire_days)") &
+            !("scale(avg_15yr_prcp..mm.day.)" && "scale(cv_15yr_fire_days)") &
+            !("scale(cv_15yr_prcp..mm.day.)" && "scale(avg_15yr_fire_days)") &
+            !("scale(cv_15yr_prcp..mm.day.)" && "scale(cv_15yr_fire_days)") &
+            
+            !("scale(avg_15yr_fire_days)" && "scale(cv_15yr_fire_days)")
+      )
+
+filter(fri_mod_dredge, delta < 4)
+## No climate variables are explanatory of the fire return index
+model.avg(fri_mod_dredge, subset = delta<4) %>% summary(.)
+
+
+fri_glob_mod <- lmer(
+      fri15yr ~ 
+            scale(drought_index) + scale(avg_30yr_srad..W.m.2.) + scale(avg_30yr_tmax..deg.c.) + scale(avg_30yr_tmin..deg.c.) + scale(avg_30yr_vp..Pa.) + scale(cv_30yr_srad..W.m.2.) + scale(cv_30yr_tmax..deg.c.) + scale(cv_30yr_tmin..deg.c.) + scale(cv_30yr_vp..Pa.) + scale(cv_30yr_prcp..mm.day.) + scale(avg_30yr_prcp..mm.day.) + scale(avg_30yr_fire_days) + scale(cv_30yr_fire_days) + (1 | inst_name/plot_id), 
+      data = model_data_noNA,
+      control = lmerControl(
+            optimizer="bobyqa", optCtrl=list(maxfun=1000000)),
+      na.action = "na.fail"
+            )
+
+
+fri_mod_dredge2 <- dredge(
+      fri_glob_mod,
+      # fixed = "scale(drought_index)",
+      subset = !("scale(avg_30yr_srad..W.m.2.)" && "scale(avg_30yr_tmax..deg.c.)") & 
+            !("scale(avg_30yr_srad..W.m.2.)" && "scale(avg_30yr_tmin..deg.c.)") & 
+            !("scale(avg_30yr_srad..W.m.2.)" && "scale(avg_30yr_vp..Pa.)") &
+            !("scale(avg_30yr_srad..W.m.2.)" && "scale(cv_30yr_vp..Pa.)") &
+            
+            !("scale(avg_30yr_tmax..deg.c.)" && "scale(avg_30yr_tmin..deg.c.)") & 
+            !("scale(avg_30yr_tmax..deg.c.)" && "scale(avg_30yr_vp..Pa.)") &
+            !("scale(avg_30yr_tmax..deg.c.)" && "scale(cv_30yr_tmax..deg.c.)") &
+            !("scale(avg_30yr_tmax..deg.c.)" && "scale(cv_30yr_vp..Pa.)") &
+            
+            !("scale(avg_30yr_tmin..deg.c.)" && "scale(avg_30yr_vp..Pa.)") &
+            !("scale(avg_30yr_tmin..deg.c.)" && "scale(cv_30yr_tmax..deg.c.)") &
+            !("scale(avg_30yr_tmin..deg.c.)" && "scale(cv_30yr_vp..Pa.)") &
+            
+            !("scale(avg_30yr_vp..Pa.)" && "scale(cv_30yr_tmax..deg.c.)") &
+            !("scale(avg_30yr_vp..Pa.)" && "scale(cv_30yr_vp..Pa.)") &
+            
+            !("scale(cv_30yr_tmax..deg.c.)" && "scale(cv_30yr_tmin..deg.c.)") &
+            # !("scale(cv_30yr_tmax..deg.c.)" && "scale(cv_30yr_fire_days)") &
+            
+            !("scale(cv_30yr_tmin..deg.c.)" && "scale(cv_30yr_vp..Pa.)") &
+            !("scale(cv_30yr_tmin..deg.c.)" && "scale(cv_30yr_fire_days)") &
+            
+            !("scale(avg_30yr_prcp..mm.day.)" && "scale(avg_30yr_fire_days)")
+            # !("scale(avg_30yr_prcp..mm.day.)" && "scale(cv_30yr_fire_days)") &
+            # !("scale(cv_30yr_prcp..mm.day.)" && "scale(avg_30yr_fire_days)") &
+            # !("scale(cv_30yr_prcp..mm.day.)" && "scale(cv_30yr_fire_days)") &
+            
+            # !("scale(avg_30yr_fire_days)" && "scale(cv_30yr_fire_days)")
+      )
+
+filter(fri_mod_dredge2, delta < 2)
+model.avg(fri_mod_dredge2, subset = delta<=2) %>% summary(.)
+
+# 2nd "Best" model of 15-year fire return interval has cv_30yr_fire_days
+# 3rd has avg_30yr_prcp
+```
+
+```{r fri model}
+fri_mod <- lmer(fri15yr ~ cv_30yr_fire_days + (1 | inst_name/plot_id), data = model_data_noNA)
+plot(fri_mod)
+summary(fri_mod)
+DHARMa::simulateResiduals(fri_mod) %>% plot(.)
+sjPlot::plot_model(fri_mod, show.values = TRUE)
+sjPlot::plot_model(fri_mod, type = "std", show.values = TRUE)
+sjPlot::plot_model(fri_mod, type = "pred", show.data = TRUE)
+
+model_data_noNA$fri15yr_days <- round(model_data_noNA$fri15yr*365)
+fri_mod2 <- glmer.nb(fri15yr_days ~ cv_30yr_fire_days + (1 | inst_name/plot_id), 
+                  data = model_data_noNA)
+summary(fri_mod2)
+plot(fri_mod2)
+DHARMa::simulateResiduals(fri_mod2) %>% plot(.)
+sjPlot::plot_model(fri_mod2, type = "pred", show.data = TRUE)
+sjPlot::plot_model(fri_mod2, type = "re")
+
+fri_mod3 <- glmer(fri15yr_days ~ cv_30yr_fire_days + (1 | inst_name/plot_id), 
+                  data = model_data_noNA,
+                  family = poisson(link = "log"))
+summary(fri_mod3)
+plot(fri_mod3)
+DHARMa::simulateResiduals(fri_mod3) %>% plot(.)
+sjPlot::plot_model(fri_mod3, type = "pred", show.data = TRUE)
+sjPlot::plot_model(fri_mod3, type = "re")
+
+
+fri_log_mod <- lmer(log(fri15yr) ~ cv_30yr_fire_days + (1 | inst_name/plot_id), data = model_data_noNA)
+plot(fri_log_mod)
+DHARMa::simulateResiduals(fri_log_mod) %>% plot(.)
+summary(fri_log_mod)
+sjPlot::plot_model(fri_log_mod, type = "pred", show.data = TRUE, terms = c("cv_30yr_fire_days", "inst_name"), pred.type = "re")
+sjPlot::plot_model(fri_log_mod, type = "re", sort.est = T, grid = F)
+```
+
+> What is the intepretation of the CV of the 30-year annual average for the number of fire days??? It's negative with FRI, so installations with less variability in the number of fire days have more frequent fires??
+
+
+## Explore Models of Percent Litter
+Examine relationship between percent litter and time since fire. Percent litter was either logit transformed (lmer), applied a logit transformation in the model (glmmTMB), or modeled using beta regression. The lmer model is the only one I know how to implement in the path modeling.
+
+### GLMM TMB model: apply beta family logit link 
+```{r glmmTMB percent litter model}
+plitter <- model_data_noNA$avg_pct_litter/100
+plitter[plitter>.99] <- .99999
+
+library(glmmTMB)
+litter_tmb <- glmmTMB(plitter ~ 
+                            (d_since_fire) + 
+                            # pct_pinus_dbh +#AIC -115.7 vs canopy cover
+                            avg_canopy_cover +#AIC -126.8
+                            cv_30yr_fire_days + 
+                            (1|inst_name/plot_id),
+                 family = beta_family(link = "logit"),
+      data = model_data_noNA)
+summary(litter_tmb)
+plot(DHARMa::simulateResiduals(litter_tmb))
+AICc(litter_tmb)
+sjPlot::plot_model(litter_tmb, type = "pred", show.data = T)
+```
+
+### Betaregression of percent litter
+```{r betareg mod pct litter}
+litter_br <- betareg::betareg(plitter ~ log(d_since_fire) + 
+                                    # pct_pinus_dbh +
+                                    avg_canopy_cover +
+                                    cv_30yr_fire_days, 
+                            data = model_data_noNA)
+summary(litter_br)
+AICc(litter_br)
+sjPlot::plot_model(litter_br, type = "pred", show.data = T)
+```
+
+### lmer model: Logit-transformed percent litter
+```{r lmer logit pct litter}
+logit_pct_litter <- car::logit(model_data_noNA$avg_pct_litter)
+litter_mod <- lmer(
+       logit_pct_litter ~ 
+            d_since_fire + 
+            # pct_pinus_dbh +
+            avg_canopy_cover +
+            # avg_dry_standing_gm2 +
+            cv_30yr_fire_days + 
+            # cv_1yr_vp..Pa. +
+            # frindex +
+            # fri15yr +
+            (1 | inst_name/plot_id), 
+      data = model_data_noNA)
+plot(litter_mod)
+summary(litter_mod)
+plot(DHARMa::simulateResiduals(litter_mod))
+AICc(litter_mod)
+sjPlot::plot_model(litter_mod, type = "pred", show.data = T)
+r.squaredGLMM(litter_mod)
+
+```
+
+Each of these models shows very similar predicted relationships, except that the CV of fire days is essentially flat in the beta regression model
+
+## Percent pine modeling
+Relationship between proportion *Pinus* DBH and fire. Modeled using beta regression and applying the logit-transformed response in lmer. May be ideal to leave this out of the path analysis in favor of the more straightforward interpretation of canopy cover.
+
+```{r explore pct pine model}
+logit_pct_pine <- car::logit(model_data_noNA$pct_pinus_dbh, adjust = .0000000001)
+p_pine <- model_data_noNA$pct_pinus_dbh/100
+p_pine[p_pine>.999] <- .99999
+p_pine[p_pine==0] <- .00001
+
+p_pine_mod <- betareg::betareg(p_pine ~ d_since_fire , data = model_data_noNA)
+summary(p_pine_mod)
+plot(p_pine_mod)
+AICc(p_pine_mod)
+sjPlot::plot_model(p_pine_mod, type = "pred", show.data = T)
+
+
+p_pine_mod2 <- betareg::betareg(p_pine ~ fri15yr , data = model_data_noNA)
+AICc(p_pine_mod2)
+sjPlot::plot_model(p_pine_mod2, type = "pred", show.data = T)
+
+
+p_pine_mod_lmer <- lmer(logit_pct_pine ~ d_since_fire + (1|inst_name/plot_id), data = model_data_noNA)
+AICc(p_pine_mod_lmer)
+plot(p_pine_mod_lmer)
+summary(p_pine_mod_lmer)
+plot(DHARMa::simulateResiduals(p_pine_mod_lmer))
+sjPlot::plot_model(p_pine_mod_lmer, type = "pred", terms = "d_since_fire", show.data = T)
+
+```
+
+Logit transforming and using lmer results in poor model fit based on diagnostic plots. The beta regression appears to do much better.
+
+
+## Canopy cover modeling
+
+```{r explore canopy cover model}
+pcanopy <- model_data_noNA$avg_canopy_cover/100
+canopy_glmmTMB <- glmmTMB(pcanopy ~ log(fri15yr) + (1|inst_name), data = model_data_noNA, family = beta_family(link = "logit"))
+plot(predict(canopy_glmmTMB), residuals(canopy_glmmTMB, type = "pearson"))
+summary(canopy_glmmTMB)
+AICc(canopy_glmmTMB)
+
+canopy_logit <- lmer(car::logit(pcanopy) ~ log(fri15yr) + (1|inst_name), data = model_data_noNA)
+plot(canopy_logit)
+summary(canopy_logit)
+AICc(canopy_logit)
+
+canopy_mod <- lmer(avg_canopy_cover ~ log(fri15yr) + (1|inst_name), data = model_data_noNA)
+plot(canopy_mod)
+AICc(canopy_mod)
+summary(canopy_mod)
+plot(DHARMa::simulateResiduals(canopy_mod))
+sjPlot::plot_model(canopy_mod, show.values = T)
+sjPlot::plot_model(canopy_mod, type = "pred", show.data = T)
+sjPlot::plot_model(canopy_mod, type = "re", show.data = T)
+
+# lmtest::lrtest(canopy_mod1, canopy_mod2)
+## Likelihood ratio test shows very very small improvement with cv fire days
+
+
+# canopy_breg <- betareg::betareg(pcanopy ~ log(fri15yr), data = model_data_noNA)
+# summary(canopy_breg)
+# plot(canopy_breg)
+# sjPlot::plot_model(canopy_breg, type = "pred", show.data = T)
+# lmtest::lrtest(canopy_breg1, canopy_breg2)
+## Likelihood ratio test indicates slightly greater likelihood with cv of fire days in the beta regression model
+
+```
+
+The proportional canopy cover data is surprisingly close to a Gaussian distribution and there aren't many extreme observations. So, is there much value using beta regression per se or the logit transformation in terms of estimating direct and indirect effects for these data? 
+
+Maybe it matters for predicting out of sample to the extremes, i.e. very very close to 0 and 1 proportions?
+But those aren't very realistic values in the forest landscapes we sampled.
+
+Summary of plot-level overstory canopy cover data: `r summary(model_data_noNA$avg_canopy_cover)`
+
+The histogram does show some bi-modality in the raw data:
+
+`r hist(model_data_noNA$avg_canopy_cover)`
+
+which the `logit` transformation removes, though the distribution has a bit of a tail:
+
+`r hist(car::logit(model_data_noNA$avg_canopy_cover))`
+
+
+## Relative host abundance
+This is a hot mess.
+
+
+```{r explore host response model, eval=FALSE}
+hist(model_data_noNA$total_clusters1m)
+## super skewed by rabbit numbers
+hist(sqrt(model_data_noNA$total_clusters1m))
+hist(log1p(model_data_noNA$total_clusters1m))
+
+hist(model_data_noNA$deer)
+hist(log1p(model_data_noNA$deer))# doesn't make it much better
+
+host_mod_nb <- glmer.nb(
+      total_clusters1m ~ avg_canopy_cover + (1 | inst_name/plot_id),
+      data = model_data_noNA,
+      control = glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=1000000))
+      )
+# model won't even fit successfully
+AICc(host_mod_nb)
+plot(DHARMa::simulateResiduals(host_mod_nb))
+summary(host_mod_nb)
+deer_mod_nb <- glmer.nb(
+      deer ~ avg_canopy_cover + (1 | inst_name/plot_id),
+      data = model_data_noNA,
+      control = glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=1000000))
+      )
+DHARMa::simulateResiduals(deer_mod_nb) %>% plot()
+# strong trend in upper quantile but probably more stable than with rabbit
+summary(deer_mod_nb)
+
+model_data_noNA <- model_data_noNA %>% 
+  mutate(deer_other = deer + cow + turkey + other)
+deer_other_mod_nb <- glmer.nb(
+  deer_other ~ avg_canopy_cover + (1 | inst_name/plot_id),
+      data = model_data_noNA,
+      control = glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=1000000))
+)
+DHARMa::simulateResiduals(deer_other_mod_nb) %>% plot()
+summary(deer_other_mod_nb)
+
+host_mod_pois <- glmer(total_clusters1m ~ 
+                             avg_canopy_cover +
+                             # y_since_fire +
+                              (1 | inst_name/plot_id),
+                        data = model_data_noNA, family = poisson(link = "log"),
+                        control = glmerControl(
+            optimizer="bobyqa", optCtrl=list(maxfun=10000000)))
+plot(DHARMa::simulateResiduals(host_mod_pois))
+summary(host_mod_pois)
+
+host_mod_tmb <- glmmTMB(total_clusters1m ~ 
+                              avg_canopy_cover +
+                             # y_since_fire +
+                              # cv_1yr_vp..Pa. +
+                              (1 | inst_name/plot_id), ziformula = ~.,
+                        data = model_data_noNA, family = poisson(link = "log"),
+                        control = glmmTMBControl(optCtrl=list(iter.max=500)))
+
+plot(DHARMa::simulateResiduals(host_mod_tmb))
+summary(host_mod_tmb)
+AICc(host_mod_tmb)
+
+lmtest::lrtest(host_mod_nb,host_mod_pois)
+MuMIn::AICc(host_mod_nb, host_mod_pois, host_mod_tmb)
+
+
+summary(host_mod)
+plot(host_mod)
+
+```
+
+## Path Analysis
+The path modeling package doesn't handle `glmmTMB` or `betareg` models (yet). I'm logit transforming the proportional data using the `car::logit()` function, and this newly calculated variable must be used in all the models. Path modeling/SEM is still hard...
+
+"A note here that the magnitude of the P-value does not reflect increasing fit, only increasing support for the notion that the observed and model-estimated covariances are not different."
+[https://jslefche.github.io/sem_book/global-estimation.html#sem-using-lavaan]
+
+"The goal of standardization is to increase comparability. In other words, the magnitude of standardized coefficients can be directly compared to make inferences about the relative strength of relationships."
+[https://jslefche.github.io/sem_book/coefficients.html#unstandardized-and-standardized-coefficients]
+
+```{r path model structure with mixed effects models, eval=T}
+# devtools::install_github("jslefche/piecewiseSEM@devel")
+library(piecewiseSEM)
+library(lme4)
+# library(optimx)
+sem_data <- model_data_noNA %>% 
+      select(plot_id:visit_year, tick_abundance, ticks_per_trap, ticks_human, prev_human, ticks_human_animal, prev_human_animal, ticks_human_no_Ramb, prev_human_no_Ramb, avg_dry_standing_gm2, avg_woody_ht_all, total_stems_100m2, plot_avg_veg_cover, avg_herb_ht_all, avg_litter_depth_all, avg_pct_litter, avg_dry_litter_gm2, avg_canopy_cover, pct_pinus_dbh, deer, cow, turkey, deer_other, cottontail, total_clusters1m,  avg_30yr_fire_days, cv_30yr_fire_days, avg_1yr_vp..Pa., cv_1yr_vp..Pa., drought_index, trap_effort, cbnd_abundance) %>% 
+      mutate(y_since_fire_log = log1p(y_since_fire),
+             fri15yr_log = log(fri15yr),
+             plitter = avg_pct_litter/100,
+             plitter = ifelse(plitter>.99, .999999, plitter),
+             logit_litter = car::logit(avg_pct_litter, adjust = .000001),
+             logit_pct_pine = car::logit(pct_pinus_dbh, adjust = .000001),
+             logit_canopy = car::logit(avg_canopy_cover)) %>% 
+      as.data.frame(.)
+
+# names(model_data_noNA)
+
+write_csv(sem_data, "data/path_analysis_data.csv")
+
+
+human_no_Ramb_mod <- glmer(
+  cbind(ticks_human_no_Ramb, tick_abundance) ~ ticks_per_trap + (1 | plot_id), data = sem_data, family = binomial(link = "logit"))
+summary(human_no_Ramb_mod)
+plot(DHARMa::simulateResiduals(human_no_Ramb_mod))
+
+human_mod <- glmer.nb(
+  prev_human ~ ticks_per_trap + total_clusters1m + (1 | inst_name), data = sem_data, family = binomial)
+summary(human_mod)
+plot(DHARMa::simulateResiduals(human_mod))
+
+
+human_animal_mod <- glmer(
+  cbind(ticks_human_animal, tick_abundance) ~ ticks_per_trap + total_clusters1m + (1 | plot_id), data = sem_data, family = binomial(link = "logit"))
+summary(human_animal_mod)
+plot(DHARMa::simulateResiduals(human_animal_mod))
+
+
+tick_model <- glmer(cbind(tick_abundance, trap_effort) ~ y_since_fire_log + logit_litter + avg_litter_depth_all + avg_dry_standing_gm2 + logit_pct_pine + avg_canopy_cover + total_clusters1m + avg_1yr_vp..Pa. +  (1 | inst_name/plot_id),
+                    data = sem_data, family = binomial(link = "logit"))
+summary(tick_model)
+plot(DHARMa::simulateResiduals(tick_model))
+
+tick_mod <- glmer(
+      ticks_per_trap ~ y_since_fire_log + 
+            # avg_pct_litter + 
+            logit_litter +
+            avg_litter_depth_all +
+            # avg_dry_standing_gm2 + 
+            logit_pct_pine + #AICc=450 vs avg_canopy_cover
+            # logit_canopy + #AICc=450.7
+            avg_canopy_cover + #AICc=450.2
+            # total_clusters1m +
+            # drought_index +
+            avg_1yr_vp..Pa. + 
+            (1|inst_name/plot_id),
+      data = sem_data, family = poisson(link = "log"),
+      na.action = "na.fail",
+      control=glmerControl(
+            optimizer = "Nelder_Mead",
+            optCtrl=list(maxfun=100000)))
+# AICc(tick_mod)
+# plot(tick_mod)
+# summary(tick_mod)
+plot(DHARMa::simulateResiduals(tick_mod))
+
+tick_mod2 <- glmer.nb(
+      ticks_per_trap ~ y_since_fire_log + logit_litter + logit_pct_pine + 
+            avg_canopy_cover + avg_1yr_vp..Pa. + (1|inst_name/plot_id),
+      data = sem_data, 
+      # family = poisson(link = "log"),
+      na.action = "na.fail",
+      control=glmerControl(
+            optimizer = "Nelder_Mead",
+            optCtrl=list(maxfun=100000)))
+plot(DHARMa::simulateResiduals(tick_mod2))
+MuMIn::AICc(tick_mod, tick_mod2)
+lmtest::lrtest(tick_mod, tick_mod2)
+## Effectively the same models
+
+tick_mod_hosts <- glmer(
+      ticks_per_trap ~ y_since_fire_log + logit_litter +
+            logit_pct_pine + #AICc=450 vs avg_canopy_cover
+            # logit_canopy + #AICc=450.7
+            avg_canopy_cover + #AICc=450.2
+            total_clusters1m +
+            avg_1yr_vp..Pa. + 
+            (1|inst_name/plot_id),
+      data = sem_data, family = poisson(link = "log"),
+      na.action = "na.fail",
+      control=glmerControl(
+            optimizer = "Nelder_Mead",
+            optCtrl=list(maxfun=100000)))
+plot(DHARMa::simulateResiduals(tick_mod_hosts))
+
+host_mod <- glmer(total_clusters1m ~ avg_canopy_cover + y_since_fire_log +
+                    + (1 | inst_name/plot_id),
+                        data = sem_data, family = poisson,
+                        control = glmerControl(
+            optimizer="bobyqa", optCtrl=list(maxfun=10000000)))
+plot(DHARMa::simulateResiduals(host_mod))
+
+
+avg_1yr_vp_mod <- lmer(avg_1yr_vp..Pa. ~ cv_30yr_fire_days + (1|inst_name), data = sem_data)
+# summary(cv1yr_mod)
+# r.squaredGLMM(cv1yr_mod)
+plot(DHARMa::simulateResiduals(avg_1yr_vp_mod))
+
+yfire_mod <- lmer(y_since_fire_log ~ fri15yr_log + (1 | inst_name), data = sem_data)
+plot(DHARMa::simulateResiduals(yfire_mod))
+
+fri_mod <- lmer(fri15yr_log ~ cv_30yr_fire_days + (1 | inst_name/plot_id), data = sem_data)
+plot(DHARMa::simulateResiduals(fri_mod))
+
+# AICc(fri_mod)
+# summary(fri_mod)
+# r.squaredGLMM(fri_mod)
+## test glmm tmb, betareg in psem, which don't appear to work...
+### Error in data.frame(..., check.names = FALSE) : arguments imply differing number of rows: 101, 0
+litter_mod <- 
+      lmer(logit_litter ~ y_since_fire_log + fri15yr_log + avg_canopy_cover + (1 | inst_name/plot_id), data = sem_data)
+      # betareg::betareg(plitter ~ y_since_fire_log + avg_canopy_cover + avg_dry_standing_gm2 +, data = sem_data)
+      # glmmTMB(plitter ~ y_since_fire_log + avg_canopy_cover + avg_dry_standing_gm2 + (1|inst_name/plot_id), family = beta_family(link = "logit"), data = sem_data)
+AICc(litter_mod)
+summary(litter_mod)
+plot(DHARMa::simulateResiduals(litter_mod))
+
+            
+pine_mod <- lmer(logit_pct_pine ~ fri15yr_log + 
+                       avg_canopy_cover +
+                       (1|inst_name/plot_id), data = sem_data)
+AICc(pine_mod)
+summary(pine_mod)
+plot(DHARMa::simulateResiduals(pine_mod))
+
+
+canopy_mod <- lmer(avg_canopy_cover ~ y_since_fire_log + (1|inst_name/plot_id), data = sem_data)
+plot(DHARMa::simulateResiduals(canopy_mod))
+
+## Exclude from final/interpreted model
+# dry_standing_mod <- lmer(
+#       avg_dry_standing_gm2 ~
+#             fri15yr_log +
+#             # y_since_fire_log +
+#             avg_canopy_cover +
+#             cv_1yr_vp..Pa. +
+#             (1 | inst_name/plot_id), data = sem_data)
+# AICc(dry_standing_mod)
+# summary(dry_standing_mod)
+
+
+mod <- psem(human_mod, tick_mod, yfire_mod, fri_mod, litter_mod, avg_1yr_vp_mod, pine_mod, canopy_mod, data = sem_data)
+
+psem_mod_summary <- summary(mod, conserve = TRUE)
+psem_mod_summary
+# broom::tidy(psem.model.summary)
+
+knitr::kable(psem_mod_summary$coefficients, digits = 2)
+
+mod_w_hosts <- psem(
+      human_mod,
+      tick_mod_hosts,
+      yfire_mod,
+      fri_mod,
+      host_mod,
+      litter_mod,
+      avg_1yr_vp_mod,
+      pine_mod,
+      canopy_mod
+
+      )
+
+modwhost_summary <- summary(mod_w_hosts, conserve = TRUE)
+modwhost_summary
+
+psem_mod_summary$IC
+modwhost_summary$IC
+```
+
+**Substantially better structural model with hosts excluded**
+
+```{r plot relationships from model, eval = F}
+ggplot(sem_data, aes(inst_name, fri15yr)) +
+      geom_boxplot(outlier.shape = NA) + 
+      geom_point(aes(color=inst_name),position = position_jitterdodge())
+
+tick_mod_scaled <- glmer(
+      ticks_per_trap ~ scale(y_since_fire_log) + 
+            # avg_pct_litter + 
+            scale(logit_litter) +
+            # avg_litter_depth_all + 
+            # avg_dry_standing_gm2 + 
+            scale(logit_pct_pine) + #AICc=450 vs avg_canopy_cover
+            # logit_canopy + #AICc=450.7
+            # avg_canopy_cover + #AICc=450.2
+            # total_clusters1m +
+            # drought_index +
+            scale(avg_1yr_vp_mod) + 
+            # (1|inst_name/plot_id),
+            (1|inst_name/plot_id),
+      data = sem_data, family = poisson(link = "log"),
+      na.action = "na.fail",
+      control=glmerControl(
+            optimizer = "Nelder_Mead",
+            optCtrl=list(maxfun=100000)))
+summary(tick_mod_scaled)
+
+```
+
+
+```{r sem graph, eval=FALSE, echo=F}
+library(dagitty)
+g <- dagitty("dag{
+             x1 -> y1
+          x1 -> y3
+y2 -> y3
+y2 -> y1
+y1 -> y3
+             }")
+plot(graphLayout(g))
+
+impliedConditionalIndependencies(g)
+```
+
+## Plot tick model from SEM
+```{r plot tick model, eval=T}
+
+library(sjPlot)
+
+plot_model(tick_mod, type = "diag")
+plot_model(tick_mod, type = "pred", pred.type = "re", show.data = T)
+
+```
