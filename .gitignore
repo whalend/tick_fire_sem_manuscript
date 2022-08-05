@@ -31,9 +31,15 @@ vignettes/*.pdf
 *_cache/
 /cache/
 
+analysis_files/
+output/
+
 # Temporary files created by R markdown
 *.utf8.md
 *.knit.md
 
 # R Environment Variables
 .Renviron
+.Rproj
+
+*.html

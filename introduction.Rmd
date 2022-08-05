@@ -1,0 +1,83 @@
+
+Despite considerable advancements in human medicine, infectious diseases continue to pose a major threat to human health throughout the world. In particular, vector-borne diseases transferred from animals to humans (i.e., zoonoses) are emerging at an unprecedented rate (Jones et al. 2008). Much of the increased emergence of zoonotic diseases appears to be driven by human-mediated global change, which often interrupts healthy ecosystem functions that may mitigate disease occurrence (Myers & Patz 2009). While landscape change has been shown to increase human risk of exposure to vector-borne diseases (Patz et al. 2004), the consequences of changes in climate for vector-borne diseases remain poorly understood. 
+
+Ecological theory predicts that climate change will likely alter vector-borne disease transmission by a variety of direct and indirect pathways (Ostfeld 2009). Recent evidence indicates that climate warming is accelerating the phenology of seasonal tick emergence, potentially increasing transmission rates for specific pathogens (Levi et al. 2015).
+
+
+## Tick-borne diseases (TBDs) represent an increasingly significant public health threat. Around the world and in U.S.A. specifically
+
+Diseases transmitted by ticks present a vexing challenge, as they significantly impact human health in the southeastern U.S. [@StromdahlPrevalenceInfectionTicks2001, @DemmaEpidemiologyHumanEherlichiosis2005] and around the world. Tick control methods that rely on chemical suppression are of limited utility for broad-scale control [@Hughes2014], and changes in climate may greatly alter future pathogen exposure pathways [@OstfeldClimatechangedistribution2009].
+
+- threats from diseases
+ 
+- number of disease cases
+ 
+The risk of human exposure to TBDs is a function of the density of infected ticks (DIT), which is a product of the total density of ticks (DON) and the tick infection prevalence (TIP). For many TBDs (e.g. Lyme) the risk to humans is driven by the nymphal stage, i.e., the density of infected nymphs (DIN), which is composed of the density of nymphs (DON) and the nymphal infection prevalence (NIP). Most diseases do not have vertical transmission (parent to offspring), so pathogens can only be picked up via blood meals as larvae or nymphs. Adult male ticks don't obtain a blood meal, so the abundance of adult ticks contributing to risk of disease exposure is approximately half that of the nymphal stage.
+
+ 
+## Ecological theory predicts that climate change will likely alter vector-borne disease transmission by a variety of direct and indirect pathways
+
+1. Climate change affects hosts
+
+2. Climate change affects habitat
+
+3. Climate change affects tick survival
+
+
+Knowledge of the ecology of tick-borne pathogens has often been limited to understanding the one-way, direct effects of hosts or habitats on TBD risk at local spatial and temporal scales.
+ 
+Examples from the literature?
+ 
+Hosts:
+
+LoGiudice2003
+
+Ostfeld2006
+
+Conley2011 
+
+Gilbert2012 
+
+Titcomb2017
+
+Carr2018
+
+Habitat: 
+   
+Invasive species: Civitello2008; Racelis2012
+
+Hosts & Habitat:
+    
+Ostfeld1995 (primarily habitat)
+Cully1999
+Ostfeld2006
+
+
+Management actions (e.g., prescribed fire) and biological phenomena (e.g., plant invasions, host abundances) that affect TBD risk occur at larger spatial and temporal scales than conditions directly affecting tick survival and abundance.
+
+Relationships among climate, fire, and plant invasions at large scales likely are non-stationary, and ecological factors known to impact TBD risk are projected to shift under future climate change scenarios. 
+
+We seek to close this gap in understanding of the ecology of tick-borne pathogens by investigating the simultaneous effects of multiple biotic and abiotic factors occurring over large spatial and temporal scales on TBD exposure risk.
+
+Forest ecosystem responses to climate change will interact with the feasibility of fire management and wildfire occurrence, which alters vegetation and potentially wildlife abundance, tick abundance, and *pathogen infection rates*.
+
+We investigated biotic and abiotic drivers of TBD risk across naturally-occurring gradients in climate, fire management, and vegetation across the Southeast USA. Establishing the relative effects of these drivers will enable us to better understand how future climate changes may affect the environment and impact pathogen exposure pathways. 
+
+
+## Objective(s)
+
+**Evaluate the direct and indirect effects of climate and fire on the ecological factors influencing human risk of exposure to tick-borne pathogens by:**
+
+<!-- 1. Evaluate the interactions between fire and  plant ~~invasions~~ spanning a gradient in fire management, ~~invasive plant distribution and abundance,~~ and climatic conditions across the southeastern U.S. -->
+
+1. Quantifying the relative direct and indirect effects on tick abundance from climate, fire management, vegetation condition, and host abundance.
+
+2. Estimating the relative effects of host abundance versus tick abundance on pathogen prevalence.
+
+
+
+## Hypotheses 
+
+Introduce SEM/path model framework/hypotheses (Fig. 1)
+
+Variation in fire regime due to fire management and resulting vegetation conditions are the dominant factors explaining TBD exposure risk. The effect of climate on TBD risk will be indirect via effects on fire management, habitat, and recent weather conditions.
